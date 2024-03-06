@@ -25,6 +25,10 @@ Use `dietpi-services` to control which installed software has higher or lower pr
 
 `dietpi-update` automatically checks for updates and informs you when they are available. Update instantly, without having to write a new image. **DietPi automation** allows you to completely automate a DietPi installation with no user input, simply by configuring `dietpi.txt` before powering on.
 
+## The Fork
+
+This fork has been created to add handling for BINFMT mainly for DotNet applications to be callable without mono.exe.
+
 ## The DietPi Project Team
 
 The full list of code contributors can be viewed [here](https://github.com/MichaIng/DietPi/graphs/contributors).
