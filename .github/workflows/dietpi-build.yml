@@ -117,7 +117,7 @@ jobs:
         echo '#!/bin/dash
         set -e
         IFS=,
-        scp -O -i ~/.ssh/pk * ${{ secrets.SSH_TARGET }}:~/
+        for i in "$@"; do scp -O -i ~/.ssh/pk "$i" ${{ secrets.SSH_TARGET }}:~/; done
         echo' | sudo tee upload.sh > /dev/null
         sudo gpg --batch --import << _EOF_
         ${{ secrets.GPG_KEY }}
