@@ -2,12 +2,14 @@
 {
 	# Error out on command failures
 	set -e
+	EXIT_CODE=0
 
 	Reboot_to_load_Partition_table()
 	{
 		> /dietpi_skip_partition_resize
 		systemctl enable dietpi-fs_partition_resize
 		echo '[ INFO ] Rebooting to load the new partition table'
+		sync
 		reboot
 		exit 0
 	}
@@ -41,17 +43,28 @@
 	echo "[ INFO ] Detected root drive $ROOT_DRIVE with root partition $ROOT_PART"
 
 	# Check if the last partition contains a FAT filesystem with DIETPISETUP label
-	LAST_PART=$(lsblk -nrbo FSTYPE,LABEL "$ROOT_DRIVE" | tail -1)
-	if [[ $LAST_PART == 'vfat DIETPISETUP' ]]
+	REBOOT=0
+	if [[ $(lsblk -no LABEL "$ROOT_DRIVE" | tail -1) == 'DIETPISETUP' ]]
 	then
 		SETUP_PART=$(sfdisk -lqo DEVICE "$ROOT_DRIVE" | tail -1)
 		echo "[ INFO ] Detected trailing DietPi setup partition $SETUP_PART"
 		# Mount it and copy files if present and newer
 		TMP_MOUNT=$(mktemp -d)
 		mount -v "$SETUP_PART" "$TMP_MOUNT"
-		for f in 'dietpi.txt' 'dietpi-wifi.txt' 'dietpiEnv.txt' 'unattended_pivpn.conf' 'Automation_Custom_PreScript.sh' 'Automation_Custom_Script.sh'
+		for f in 'dietpi.txt' 'dietpi-wifi.txt' 'dietpiEnv.txt' 'boot.ini' 'extlinux.conf' 'Automation_Custom_PreScript.sh' 'Automation_Custom_Script.sh' 'unattended_pivpn.conf'
 		do
-			[[ -f $TMP_MOUNT/$f ]] && cp -uv "$TMP_MOUNT/$f" /boot/
+			[[ -f $TMP_MOUNT/$f ]] || continue
+			if [[ $f == 'extlinux.conf' ]]
+			then
+				mkdir -pv /boot/extlinux
+				[[ -f '/boot/extlinux/extlinux.conf' ]] && mtime=$(date -r '/boot/extlinux/extlinux.conf' '+%s') || mtime=0
+				cp -uv "$TMP_MOUNT/$f" /boot/extlinux/
+				(( $(date -r '/boot/extlinux/extlinux.conf' '+%s') > $mtime )) && REBOOT=1
+			else
+				[[ ( $f == 'dietpiEnv.txt' || $f == 'boot.ini' ) && -f /boot/$f ]] && mtime=$(date -r "/boot/$f" '+%s') || mtime=0
+				cp -uv "$TMP_MOUNT/$f" /boot/
+				[[ $f == 'dietpiEnv.txt' || $f == 'boot.ini' ]] && (( $(date -r "/boot/$f" '+%s') > $mtime )) && REBOOT=1
+			fi
 		done
 		umount -v "$SETUP_PART"
 		rmdir -v "$TMP_MOUNT"
@@ -65,14 +78,14 @@
 		# Mount it and copy files if present and newer
 		TMP_MOUNT=$(mktemp -d)
 		mount -v "$BOOT_PART" "$TMP_MOUNT"
-		for f in 'dietpi.txt' 'dietpi-wifi.txt' 'dietpiEnv.txt' 'unattended_pivpn.conf' 'Automation_Custom_PreScript.sh' 'Automation_Custom_Script.sh'
+		for f in 'dietpi.txt' 'dietpi-wifi.txt' 'Automation_Custom_PreScript.sh' 'Automation_Custom_Script.sh' 'unattended_pivpn.conf'
 		do
 			[[ -f $TMP_MOUNT/$f ]] && cp -uv "$TMP_MOUNT/$f" /boot/
 		done
 		umount -v "$BOOT_PART"
 		rmdir -v "$TMP_MOUNT"
 	else
-		echo "[ INFO ] No DietPi setup partition found, last partition is: \"$LAST_PART\""
+		echo '[ INFO ] No DietPi setup partition found:'
 		lsblk -po NAME,LABEL,SIZE,TYPE,FSTYPE,MOUNTPOINT "$ROOT_DRIVE"
 	fi
 
@@ -104,7 +117,7 @@
 
 	# Maximise root filesystem if type is supported
 	case $ROOT_FSTYPE in
-		'ext'[234]) resize2fs "$ROOT_DEV" || reboot;; # Reboot if resizing fails: https://github.com/MichaIng/DietPi/issues/6149
+		'ext'[234]) resize2fs "$ROOT_DEV" || REBOOT=1;; # Reboot if resizing fails: https://github.com/MichaIng/DietPi/issues/6149
 		'f2fs')
 			mount -o remount,ro /
 			resize.f2fs "$ROOT_DEV"
@@ -113,9 +126,12 @@
 		'btrfs') btrfs filesystem resize max /;;
 		*)
 			echo "[FAILED] Unsupported root filesystem type ($ROOT_FSTYPE). Aborting..."
-			exit 1
+			EXIT_CODE=1
 		;;
 	esac
 
-	exit 0
+	# Reboot if needed
+	(( $REBOOT )) && { sync; reboot; }
+
+	exit "$EXIT_CODE"
 }

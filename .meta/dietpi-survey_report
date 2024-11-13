@@ -92,6 +92,11 @@ shopt -s extglob
 		[85]='ROCK 5A'
 		[86]='ASUS Tinker Board 2'
 		[87]='Orange Pi 3B'
+		[88]='Orange Pi Zero 2W'
+		[89]='Orange Pi 3 LTS'
+		[90]='Radxa ZERO 3'
+		[91]='Orange Pi 5 Max'
+		[92]='NanoPi M6'
 	)
 
 	## Benchmark data arrays: aBENCH_XX[$HW_MODEL,${aBENCH_XX_INDEX[$HW_MODEL]}]
@@ -703,6 +708,7 @@ shopt -s extglob
 	aSOFTWARE_NAME8_25=()
 	aSOFTWARE_NAME9_0=()
 	aSOFTWARE_NAME9_1=()
+	aSOFTWARE_NAME9_2=()
 	for i in "${!aSOFTWARE_NAME8_22[@]}"
 	do
 		aSOFTWARE_NAME8_23[i]=${aSOFTWARE_NAME8_22[i]}
@@ -710,10 +716,30 @@ shopt -s extglob
 		aSOFTWARE_NAME8_25[i]=${aSOFTWARE_NAME8_24[i]}
 		aSOFTWARE_NAME9_0[i]=${aSOFTWARE_NAME8_25[i]}
 		aSOFTWARE_NAME9_1[i]=${aSOFTWARE_NAME9_0[i]}
+		aSOFTWARE_NAME9_2[i]=${aSOFTWARE_NAME9_1[i]}
+		aSOFTWARE_NAME9_3[i]=${aSOFTWARE_NAME9_2[i]}
+		aSOFTWARE_NAME9_4[i]=${aSOFTWARE_NAME9_3[i]}
+		aSOFTWARE_NAME9_5[i]=${aSOFTWARE_NAME9_4[i]}
+	done
+	aSOFTWARE_NAME9_5[177]='Forgejo'
+
+	aSOFTWARE_NAME9_6=()
+	for i in "${!aSOFTWARE_NAME9_5[@]}"
+	do
+		aSOFTWARE_NAME9_6[i]=${aSOFTWARE_NAME9_5[i]}
+	done
+	aSOFTWARE_NAME9_6[213]='soju'
+
+	aSOFTWARE_NAME9_7=()
+	aSOFTWARE_NAME9_8=()
+	for i in "${!aSOFTWARE_NAME9_6[@]}"
+	do
+		aSOFTWARE_NAME9_7[i]=${aSOFTWARE_NAME9_6[i]}
+		aSOFTWARE_NAME9_8[i]=${aSOFTWARE_NAME9_7[i]}
 	done
 
 	# Pre-create software counter array so that we can see also software (available in newest version) with 0 installs
-	for i in "${aSOFTWARE_NAME9_1[@]}"
+	for i in "${aSOFTWARE_NAME9_8[@]}"
 	do
 		aSOFTWARE[$i]=0
 	done
@@ -769,7 +795,7 @@ shopt -s extglob
 			eval "software=\${aSOFTWARE_NAME${version/./_}[$software]}"
 			if [[ ! $software ]]
 			then
-				echo "Invalid software ID for DietPi version $version"
+				echo "Invalid software ID \"$software\" for DietPi version $version"
 				mv -v "/home/dietpi-survey/survey/$file" /home/dietpi-survey/invalid/
 				return 1
 			fi
@@ -983,9 +1009,13 @@ shopt -s extglob
 
 			# Work out averages
 			# - Divide CPU times by 100 and scale to revert decimal point removal
-			aBENCH_RESULT_CPU_MIN[i]=$(printf '%.2f' "${aBENCH_RESULT_CPU_MIN[i]}e-2")
-			aBENCH_RESULT_CPU_MAX[i]=$(printf '%.2f' "${aBENCH_RESULT_CPU_MAX[i]}e-2")
-			aBENCH_RESULT_CPU_AVG[i]=$(printf '%.2f' "$((${aBENCH_RESULT_CPU_AVG[i]}*10/${aBENCH_CPU_INDEX[i]}+1))e-3")
+			#aBENCH_RESULT_CPU_MIN[i]=$(printf '%.2f' "${aBENCH_RESULT_CPU_MIN[i]}e-2")
+			#aBENCH_RESULT_CPU_MAX[i]=$(printf '%.2f' "${aBENCH_RESULT_CPU_MAX[i]}e-2")
+			#aBENCH_RESULT_CPU_AVG[i]=$(printf '%.2f' "$((${aBENCH_RESULT_CPU_AVG[i]}*10/${aBENCH_CPU_INDEX[i]}+1))e-3")
+			# - Workaround for current bash printf bug: https://bugs.debian.org/1078556
+			aBENCH_RESULT_CPU_MIN[i]=$(mawk "{printf \"%.2f\", ${aBENCH_RESULT_CPU_MIN[i]}e-2}" <<< '')
+			aBENCH_RESULT_CPU_MAX[i]=$(mawk "{printf \"%.2f\", ${aBENCH_RESULT_CPU_MAX[i]}e-2}" <<< '')
+			aBENCH_RESULT_CPU_AVG[i]=$(mawk "{printf \"%.2f\", $((${aBENCH_RESULT_CPU_AVG[i]}*10/${aBENCH_CPU_INDEX[i]}+1))e-3}" <<< '')
 
 			# CPU temps if available
 			aBENCH_RESULT_CPU_TEMP_START_MIN[i]='N/A'

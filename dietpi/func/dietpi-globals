@@ -54,8 +54,8 @@
 	[[ -f '/boot/dietpi/.version' ]] && . /boot/dietpi/.version
 	# - Assign defaults/code version as fallback
 	[[ $G_DIETPI_VERSION_CORE ]] || G_DIETPI_VERSION_CORE=9
-	[[ $G_DIETPI_VERSION_SUB ]] || G_DIETPI_VERSION_SUB=1
-	[[ $G_DIETPI_VERSION_RC ]] || G_DIETPI_VERSION_RC=1
+	[[ $G_DIETPI_VERSION_SUB ]] || G_DIETPI_VERSION_SUB=8
+	[[ $G_DIETPI_VERSION_RC ]] || G_DIETPI_VERSION_RC=0
 	[[ $G_GITBRANCH ]] || G_GITBRANCH='master'
 	[[ $G_GITOWNER ]] || G_GITOWNER='daniszewski'
 	# - Save current version and Git branch
@@ -80,6 +80,9 @@ G_GITOWNER='$G_GITOWNER'" > /boot/dietpi/.version
 		# Set PATH to expected default to rule out issues due to broken environment, e.g. in combination with "su" or "sudo -E"
 		export LC_ALL='C.UTF-8' LANG='C.UTF-8' PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 
+		# Enforce default umask: https://github.com/MichaIng/DietPi/issues/7022
+		umask 0022
+
 		# Set G_PROGRAM_NAME to originating script file (or shell executable) name if it was not set by originating script
 		[[ $G_PROGRAM_NAME ]] || readonly G_PROGRAM_NAME=${0##*/}
 
@@ -102,14 +105,17 @@ G_GITOWNER='$G_GITOWNER'" > /boot/dietpi/.version
 			readonly G_WORKING_DIR="/tmp/${G_PROGRAM_NAME}_$i"
 		else
 			# Concurrency not allowed: Use existing working directory as flag
-			local limit=${G_INIT_WAIT_CONCURRENT:-5}
+			readonly G_WORKING_DIR="/tmp/$G_PROGRAM_NAME"
+			G_INIT_WAIT_CONCURRENT=${G_INIT_WAIT_CONCURRENT:=5}
 
-			while [[ -d /tmp/$G_PROGRAM_NAME ]]
+			while [[ -d $G_WORKING_DIR ]]
 			do
-				if (( $i < $limit ))
+				# SIGKILL prevents the exit trap from removing this dir. Remove it in this case and proceed.
+				[[ $(pidof -x "$0") == *' '* ]] || { rm -R "$G_WORKING_DIR"; break; }
+				if (( $i < $G_INIT_WAIT_CONCURRENT ))
 				then
 					((i++))
-					G_DIETPI-NOTIFY 2 "Concurrent execution of $G_PROGRAM_NAME detected, retrying... ($i/$limit)"
+					G_DIETPI-NOTIFY 2 "Concurrent execution of $G_PROGRAM_NAME detected, retrying... ($i/$G_INIT_WAIT_CONCURRENT)"
 					G_SLEEP 1
 				else
 					G_WHIP_BUTTON_OK_TEXT='Retry'
@@ -121,14 +127,12 @@ Please check if one of the following applies:
  - You started this script from within another DietPi program, causing a loop.\n
 Please assure that the concurrent execution has finished, before retrying, otherwise cancel this instance.\n
 The following info might help:
-$(ps f -eo pid,user,tty,cmd | grep -i '[d]ietpi')" && continue
+$(ps f -eo pid,user,tty,cmd | grep -i 'dietpi')" && continue
 
 					G_DIETPI-NOTIFY 1 "Cancelled $G_PROGRAM_NAME due to concurrent execution"
 					exit 1
 				fi
 			done
-
-			readonly G_WORKING_DIR="/tmp/$G_PROGRAM_NAME"
 		fi
 
 		# Declare exit trap which runs on EXIT signals, including SIGINT and SIGTERM but not SIGKILL!
@@ -148,13 +152,8 @@ $(ps f -eo pid,user,tty,cmd | grep -i '[d]ietpi')" && continue
 
 		# Create and navigate to scripts working directory or users home if available: https://github.com/MichaIng/DietPi/issues/905#issuecomment-298223705
 		mkdir -p "$G_WORKING_DIR" && cd "$G_WORKING_DIR" && return
-		G_DIETPI-NOTIFY 1 "Failed to create or enter scripts working directory: $G_WORKING_DIR"
-		if [[ $HOME && -d $HOME ]]
-		then
-			cd "$HOME" && { G_DIETPI-NOTIFY 2 "Entered users home directory: $HOME"; return; }
-			G_DIETPI-NOTIFY 1 "Failed to enter users home directory: $HOME"
-		fi
-		G_DIETPI-NOTIFY 2 "Will stay in current directory: $PWD"
+		G_DIETPI-NOTIFY 1 "Failed to create or enter scripts working directory: $G_WORKING_DIR. Aborting ..."
+		exit 1
 
 	}
 
@@ -445,7 +444,7 @@ $grey─────────────────────────
 	# - G_WHIP_RETURNED_VALUE 	| Returned value from inputbox/menu/checklist based whiptail items
 
 	# G_WHIP_DESTROY | Clear vars after run of whiptail
-	G_WHIP_DESTROY(){ unset -v G_WHIP_DEFAULT_ITEM G_WHIP_SIZE_X_MAX G_WHIP_BUTTON_OK_TEXT G_WHIP_BUTTON_CANCEL_TEXT G_WHIP_NOCANCEL G_WHIP_MENU_ARRAY G_WHIP_CHECKLIST_ARRAY; }
+	G_WHIP_DESTROY(){ unset -v G_WHIP_DEFAULT_ITEM G_WHIP_SIZE_X_MAX G_WHIP_BUTTON_OK_TEXT G_WHIP_BUTTON_CANCEL_TEXT G_WHIP_NOCANCEL G_WHIP_MENU_ARRAY G_WHIP_CHECKLIST_ARRAY G_WHIP_INPUTBOX_REGEX G_WHIP_INPUTBOX_REGEX_TEXT; }
 
 	# Run once, to be failsafe in case any exported/environment variables are left from originating shell
 	G_WHIP_DESTROY
@@ -701,6 +700,7 @@ $grey─────────────────────────
 
 	# G_WHIP_INPUTBOX "message"
 	# - Prompt user to input text and save it to G_WHIP_RETURNED_VALUE
+	# - G_WHIP_INPUTBOX_REGEX/G_WHIP_INPUTBOX_REGEX_TEXT: Regular expression and description about allowed input. Defaults to the requirement that the input is not empty.
 	# - Exit code: 0=input done, else=user cancelled or noninteractive
 	G_WHIP_INPUTBOX()
 	{
@@ -714,10 +714,12 @@ $grey─────────────────────────
 			while :
 			do
 				G_WHIP_INIT
+				G_WHIP_INPUTBOX_REGEX=${G_WHIP_INPUTBOX_REGEX:-'.'}
+				G_WHIP_INPUTBOX_REGEX_TEXT=${G_WHIP_INPUTBOX_REGEX_TEXT:-'not be empty'}
 				# shellcheck disable=SC2086
 				G_WHIP_RETURNED_VALUE=$(whiptail ${G_PROGRAM_NAME:+--title "$G_PROGRAM_NAME"} --backtitle "$WHIP_BACKTITLE" --inputbox "$WHIP_ERROR$WHIP_MESSAGE" --ok-button "$G_WHIP_BUTTON_OK_TEXT" --cancel-button "$G_WHIP_BUTTON_CANCEL_TEXT" "${NOCANCEL[@]}" $WHIP_SCROLLTEXT "$WHIP_SIZE_Y" "$WHIP_SIZE_X" "$G_WHIP_DEFAULT_ITEM" 3>&1 1>&2 2>&3-; echo $? > /tmp/.G_WHIP_INPUTBOX_RESULT)
 				read -r result < /tmp/.G_WHIP_INPUTBOX_RESULT; rm -f /tmp/.G_WHIP_INPUTBOX_RESULT
-				[[ $result == 0 && -z $G_WHIP_RETURNED_VALUE ]] && { WHIP_ERROR='[FAILED] An input value was not entered, please try again...\n\n'; continue; }
+				[[ $result == 0 && ! $G_WHIP_RETURNED_VALUE =~ $G_WHIP_INPUTBOX_REGEX ]] && { WHIP_ERROR="[FAILED] Input must $G_WHIP_INPUTBOX_REGEX_TEXT, please try again ...\n\n"; continue; }
 				break
 			done
 
@@ -804,6 +806,63 @@ $grey─────────────────────────
 		return "${result:-1}"
 	}
 
+	# G_BUG_REPORT [-c COMMAND] [-? EXIT_CODE]
+	# - Print pre-filled bug report template
+	G_BUG_REPORT()
+	{
+		local command exit_code
+		while (( $# ))
+		do
+			case $1 in
+				'-c') shift; command=$1;;
+				'-?') shift; exit_code=$1;;
+				*) G_DIETPI-NOTIFY 1 "Invalid argument \"$1\""; return 1;;
+			esac
+			shift
+		done
+
+		# Print bug report template
+		echo "#### Details:
+- Date           | $(date '+%F %T')"
+		# - Add program/script name, failed command and exit code if given
+		[[ $G_PROGRAM_NAME ]] && echo "- Program name   | $G_PROGRAM_NAME"
+		[[ $command ]] && echo "- Command        | \`$command\`"
+		[[ $exit_code ]] && echo "- Exit code      | $exit_code"
+		echo "- DietPi version | v$G_DIETPI_VERSION_CORE.$G_DIETPI_VERSION_SUB.$G_DIETPI_VERSION_RC ($G_GITOWNER/$G_GITBRANCH)
+- Distro version | $G_DISTRO_NAME (ID=$G_DISTRO${G_RASPBIAN:+,RASPBIAN=$G_RASPBIAN})
+- Kernel version | \`$(uname -a)\`
+- Architecture	 | \`$(dpkg --print-architecture)\`
+- Hardware model | $G_HW_MODEL_NAME (ID=$G_HW_MODEL)
+- Power supply   | (EG: RAVPower 5V 1A)
+- SD card        | (EG: SanDisk Ultra 16 GB)"
+		# - Add image creator and pre-image info if given
+		if [[ -f '/boot/dietpi/.prep_info' ]]
+		then
+			image_creator=$(mawk 'NR==1' /boot/dietpi/.prep_info)
+			[[ ${image_creator:-0} == 0 ]] || echo "- Image creator  | $image_creator"
+			preimage_name=$(mawk 'NR==2' /boot/dietpi/.prep_info)
+			[[ $preimage_name ]] && echo "- Pre-image      | $preimage_name"
+		fi
+		echo '#### Steps to reproduce:
+<!-- Explain how to reproduce the issue -->
+1. ...
+2. ...
+#### Expected behaviour:
+<!-- What SHOULD happen? -->
+- ...
+#### Actual behaviour:
+<!-- What IS happening? -->
+- ...
+#### Extra details:
+<!-- Please post any extra details that might help solve the issue -->
+- ...
+#### Additional logs:
+```'
+		# - Add log if given
+		[[ -f '/tmp/G_EXEC_LOG' ]] && cat '/tmp/G_EXEC_LOG' || echo '<!-- Please paste logs or related console output here -->'
+		echo '```'
+	}
+
 	#-----------------------------------------------------------------------------------
 	# Error handled command execution wrapper
 	#-----------------------------------------------------------------------------------
@@ -868,60 +927,17 @@ $grey─────────────────────────
 			# Retry non-interactively if current $attempt is <= $G_EXEC_RETRIES
 			[[ $attempt -le $G_EXEC_RETRIES ]] && { ((attempt++)) && continue; }
 
+			# Print command output if not done already
+			[[ $G_EXEC_OUTPUT != 1 ]] && cat "$fp_log"
+
 			# Print FAILED, append raw command string if $G_EXEC_DESC is given
 			G_DIETPI-NOTIFY 1 "${G_EXEC_DESC:+$G_EXEC_DESC\n - Command: }$ecommand"
 
 			# Exit retry loop if $G_EXEC_NOHALT=1 is given
 			[[ $G_EXEC_NOHALT == 1 ]] && break
 
-			# Prepare error handler menu and GitHub issue template
-			local fp_error_report='/tmp/G_EXEC_ERROR_REPORT' log_content=$(<"$fp_log") image_creator preimage_name dietpi_version="v$G_DIETPI_VERSION_CORE.$G_DIETPI_VERSION_SUB.$G_DIETPI_VERSION_RC ($G_GITOWNER/$G_GITBRANCH)" last_whip_menu_item sent_bug_report
-			if [[ -f '/boot/dietpi/.prep_info' ]]; then
-
-				image_creator=$(mawk 'NR==1' /boot/dietpi/.prep_info)
-				[[ $image_creator == 0 ]] && image_creator='DietPi Core Team'
-				preimage_name=$(mawk 'NR==2' /boot/dietpi/.prep_info)
-
-			fi
-
-			# Create GitHub issue template if error was produced by one of our scripts
-			[[ ${G_PROGRAM_NAME,,} == 'dietpi-'* ]] && echo -e "\e[41m
----------------------------------------------------------------------
-- DietPi has encountered an error                                   -
-- Please create a ticket: https://github.com/MichaIng/DietPi/issues -
-- Copy and paste only the BLUE lines below into the ticket          -
----------------------------------------------------------------------\e[44m
-#### Details:
-- Date           | $(date)
-- DietPi version | $dietpi_version
-- Image creator  | $image_creator
-- Pre-image      | $preimage_name
-- Hardware       | $G_HW_MODEL_NAME (ID=$G_HW_MODEL)
-- Kernel version | \`$(uname -a)\`
-- Distro         | $G_DISTRO_NAME (ID=$G_DISTRO${G_RASPBIAN:+,RASPBIAN=$G_RASPBIAN})
-- Command        | \`$ecommand\`
-- Exit code      | $exit_code
-- Software title | $G_PROGRAM_NAME
-#### Steps to reproduce:
-<!-- Explain how to reproduce the issue -->
-1. ...
-2. ...
-#### Expected behaviour:
-<!-- What SHOULD happen? -->
-- ...
-#### Actual behaviour:
-<!-- What IS happening? -->
-- ...
-#### Extra details:
-<!-- Please post any extra details that might help solve the issue -->
-- ...
-#### Additional logs:
-\`\`\`
-$log_content
-\`\`\`\e[41m
----------------------------------------------------------------------\e[0m" > "$fp_error_report"
-
 			# Enter error handler menu loop in interactive mode
+			local last_whip_menu_item sent_bug_report fp_error_report='/tmp/G_EXEC_ERROR_REPORT' dietpi_version="v$G_DIETPI_VERSION_CORE.$G_DIETPI_VERSION_SUB.$G_DIETPI_VERSION_RC ($G_GITOWNER/$G_GITBRANCH)"
 			[[ $G_INTERACTIVE == 1 ]] && while :
 			do
 				G_WHIP_MENU_ARRAY=('Retry' ': Re-run the last command that failed')
@@ -930,8 +946,13 @@ $log_content
 				# Allow to open DietPi-Config if this error was not produced within DietPi-Config
 				pgrep -cf 'dietpi-config' &> /dev/null || G_WHIP_MENU_ARRAY+=('DietPi-Config' ': Edit network, APT/NTP mirror settings etc')
 				G_WHIP_MENU_ARRAY+=('Open subshell' ': Open a subshell to investigate or solve the issue')
-				# Allow to send bug report, if it was produced by one of our scripts
-				[[ ${G_PROGRAM_NAME,,} == 'dietpi-'* && $G_PROGRAM_NAME != 'DietPi-Installer' ]] && G_WHIP_MENU_ARRAY+=('Send report' ': Uploads bugreport containing system info to DietPi')
+
+				# Allow to send bug report if it was produced by one of our scripts, excluding DietPi-Installer
+				[[ ${G_PROGRAM_NAME,,} == 'dietpi-'* && $G_PROGRAM_NAME != 'DietPi-Installer' ]] && G_WHIP_MENU_ARRAY+=('Send report' ': Upload bug report including system info to DietPi')
+
+				# Allow to print bug report template if it was produced by one of our scripts
+				[[ ${G_PROGRAM_NAME,,} == 'dietpi-'* ]] && G_WHIP_MENU_ARRAY+=('Print report' ': Print bug report template for GitHub or forum')
+
 				G_WHIP_MENU_ARRAY+=('' '●─ Devs only ')
 				G_WHIP_MENU_ARRAY+=('Change command' ': Adjust and rerun the command')
 
@@ -941,8 +962,8 @@ $log_content
 				G_WHIP_MENU "${G_EXEC_DESC:+$(mawk '{gsub("\\\e[[0-9][;0-9]*m","");print}' <<< "$G_EXEC_DESC")\n} - Command: ${acommand[*]}
  - Exit code: $exit_code
  - DietPi version: $dietpi_version | HW_MODEL: $G_HW_MODEL | HW_ARCH: $G_HW_ARCH | DISTRO: $G_DISTRO
-${image_creator:+ - Image creator: $image_creator\n}${preimage_name:+ - Pre-image: $preimage_name\n} - Error log:
-$log_content" || break # Exit error handler menu loop on cancel
+ - Error log:
+$(<"$fp_log")" || break # Exit error handler menu loop on cancel
 
 				last_whip_menu_item=$G_WHIP_RETURNED_VALUE
 
@@ -969,7 +990,31 @@ $log_content" || break # Exit error handler menu loop on cancel
 
 				elif [[ $G_WHIP_RETURNED_VALUE == 'Send report' ]]; then
 
+					# Store error details to append to bug report upload
+					G_BUG_REPORT -c "${acommand[*]}" -? "$exit_code" > "$fp_error_report"
+
+					# Send report
 					/boot/dietpi/dietpi-bugreport 1 && sent_bug_report=1
+					read -rp '
+Press any key to continue...'
+
+				elif [[ $G_WHIP_RETURNED_VALUE == 'Print report' ]]; then
+
+					echo -e '\e[41m---------------------------------------------------------------------
+- DietPi bug report template for GitHub or forum                    -
+- Please report at: https://github.com/MichaIng/DietPi/issues       -
+                or: https://dietpi.com/forum/c/troubleshooting/10   -
+- Copy and paste ONLY the BLUE lines below, replacing the template! -
+---------------------------------------------------------------------\e[44m'
+					# Add bug report ID if sent already
+					if [[ $sent_bug_report == 1 ]]
+					then
+						sed --follow-symlinks -i "/^- Date           | /a\- Bug report     | $G_HW_UUID" "$fp_error_report"
+						cat "$fp_error_report"
+					else
+						G_BUG_REPORT -c "${acommand[*]}" -? "$exit_code"
+					fi
+					echo -e '\e[41m---------------------------------------------------------------------\e[0m'
 					read -rp '
 Press any key to continue...'
 
@@ -998,14 +1043,7 @@ Press any key to continue...'
 				fi
 			done
 
-			# Error has not been solved, print GitHub issue template if it was produced and exit error handler menu loop
-			if [[ -f $fp_error_report ]]; then
-
-				# Add bug report ID if it was sent
-				[[ $sent_bug_report == 1 ]] && sed --follow-symlinks -i "/^- Date           | /a\- Bug report     | $G_HW_UUID" "$fp_error_report"
-				cat "$fp_error_report"
-
-			fi
+			# Error has not been solved, exit error handler menu loop
 			break
 		done
 
@@ -1138,6 +1176,7 @@ Press any key to continue...'
 		{
 			acommand[5]=$(sed -n '/^[[:blank:]]*CONFIG_CHECK_CONNECTION_IP=/{s/^[^=]*=//p;q}' /boot/dietpi.txt)
 			[[ ${acommand[5]} ]] || acommand[5]='9.9.9.9'
+			ecommand=${acommand[*]//\\/\\\\}
 		}
 		# Run check with given timeout and retries
 		G_EXEC_RETRIES=$retries
@@ -1166,6 +1205,7 @@ Press any key to continue...'
 			G_GET_NET -6 -q gateway > /dev/null && [[ $(ip -6 -br a s scope global to 2000::/3 2> /dev/null) ]] || { exit_code=0; return 0; }
 			acommand[5]=$(sed -n '/^[[:blank:]]*CONFIG_CHECK_CONNECTION_IPV6=/{s/^[^=]*=//p;q}' /boot/dietpi.txt)
 			[[ ${acommand[5]} ]] || acommand[5]='2620:fe::fe'
+			ecommand=${acommand[*]//\\/\\\\}
 		}
 		# Run check with given timeout and retries
 		G_EXEC_RETRIES=$retries
@@ -1188,6 +1228,7 @@ Press any key to continue...'
 		{
 			acommand[2]=$(sed -n '/^[[:blank:]]*CONFIG_CHECK_DNS_DOMAIN=/{s/^[^=]*=//p;q}' /boot/dietpi.txt)
 			[[ ${acommand[2]} ]] || acommand[2]='dns9.quad9.net'
+			ecommand=${acommand[*]//\\/\\\\}
 		}
 		# Run check with given retries
 		G_EXEC_RETRIES=$retries
@@ -1497,9 +1538,6 @@ Press any key to continue...'
 
 		G_CHECK_ROOT_USER 1
 
-		# Workaround for Armbian mirrors being out of sync regularly or throwing 5xx errors
-		[[ -f '/etc/apt/sources.list.d/dietpi-armbian.list' ]] && G_EXEC_POST_FUNC(){ [[ $exit_code != 0 ]] && grep -q '^E: Failed to fetch .*armbian' "$fp_log" && G_EXEC_RETRIES=2 && unset -f G_EXEC_POST_FUNC; }
-
 		G_EXEC_DESC="\e[0mAPT install \e[33m$*\e[0m"
 		DEBIAN_FRONTEND=noninteractive G_EXEC_OUTPUT=1 G_EXEC_OUTPUT_COL='\e[90m' G_EXEC apt-get -y --allow-change-held-packages install "$@"
 		local exit_code=$?
@@ -1545,9 +1583,6 @@ Press any key to continue...'
 	G_AGF()
 	{
 		G_CHECK_ROOT_USER 1
-
-		# Workaround for Armbian mirrors being out of sync regularly or throwing 5xx errors
-		[[ -f '/etc/apt/sources.list.d/dietpi-armbian.list' ]] && G_EXEC_POST_FUNC(){ [[ $exit_code != 0 ]] && grep -q '^E: Failed to fetch .*armbian' "$fp_log" && G_EXEC_RETRIES=2 && unset -f G_EXEC_POST_FUNC; }
 
 		G_EXEC_DESC="\e[0mAPT fix${*:+ \e[33m$*\e[0m}"
 		DEBIAN_FRONTEND=noninteractive G_EXEC_OUTPUT=1 G_EXEC_OUTPUT_COL='\e[90m' G_EXEC apt-get -y --allow-change-held-packages -f install "$@"
@@ -1615,9 +1650,6 @@ Press any key to continue...'
 	{
 		G_CHECK_ROOT_USER 1
 
-		# Workaround for Armbian mirrors being out of sync regularly or throwing 5xx errors
-		[[ -f '/etc/apt/sources.list.d/dietpi-armbian.list' ]] && G_EXEC_POST_FUNC(){ [[ $exit_code != 0 ]] && grep -q '^E: Failed to fetch .*armbian' "$fp_log" && G_EXEC_RETRIES=2 && unset -f G_EXEC_POST_FUNC; }
-
 		G_EXEC_DESC="\e[0mAPT upgrade${*:+ \e[33m$*\e[0m}"
 		DEBIAN_FRONTEND=noninteractive G_EXEC_OUTPUT=1 G_EXEC_OUTPUT_COL='\e[90m' G_EXEC apt-get -y --with-new-pkgs upgrade "$@"
 		local exit_code=$?
@@ -1633,9 +1665,6 @@ Press any key to continue...'
 	G_AGDUG()
 	{
 		G_CHECK_ROOT_USER 1
-
-		# Workaround for Armbian mirrors being out of sync regularly or throwing 5xx errors
-		[[ -f '/etc/apt/sources.list.d/dietpi-armbian.list' ]] && G_EXEC_POST_FUNC(){ [[ $exit_code != 0 ]] && grep -q '^E: Failed to fetch .*armbian' "$fp_log" && G_EXEC_RETRIES=2 && unset -f G_EXEC_POST_FUNC; }
 
 		G_EXEC_DESC="\e[0mAPT dist-upgrade${*:+ \e[33m$*\e[0m}"
 		DEBIAN_FRONTEND=noninteractive G_EXEC_OUTPUT=1 G_EXEC_OUTPUT_COL='\e[90m' G_EXEC apt-get -y dist-upgrade "$@"
